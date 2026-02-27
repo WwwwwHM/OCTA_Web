@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OCTA 血管分割平台（纯HTML版）</title>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+      :root {
+        --bg: #f5f7fa;
+        --card: #ffffff;
+        --primary: #409eff;
+        --border: #dcdfe6;
+        --text: #303133;
+        --muted: #606266;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .container {
+        max-width: 980px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 18px;
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-size: 24px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      label {
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      select,
+      input[type='file'],
+      input[type='text'],
+      button {
+        height: 40px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        padding: 0 12px;
+        font-size: 14px;
+      }
+
+      button {
+        background: var(--primary);
+        color: #fff;
+        border: none;
+        cursor: pointer;
+        min-width: 140px;
+        transition: all 0.2s ease;
+      }
+
+      button:disabled {
+        background: #a0cfff;
+        cursor: not-allowed;
+      }
+
+      button.is-loading {
+        opacity: 0.9;
+      }
+
+      .btn-secondary {
+        background: #909399;
+      }
+
+      #previewArea,
+      #resultArea {
+        margin-top: 16px;
+        border: 1px dashed var(--border);
+        border-radius: 10px;
+        padding: 12px;
+        min-height: 120px;
+        background: #fff;
+      }
+
+      .preview-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+
+      .preview-box {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px;
+      }
+
+      .preview-title {
+        margin-bottom: 8px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      img {
+        width: 100%;
+        max-height: 320px;
+        object-fit: contain;
+        border-radius: 6px;
+      }
+
+      #resultArea img {
+        max-width: 500px;
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .compare-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+      }
+
+      .tip {
+        margin-top: 8px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      @media (max-width: 768px) {
+        .row {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <h1>OCTA 血管分割平台（纯HTML + JavaScript）</h1>
+
+        <div class="row">
+          <div class="field">
+            <label for="modelSelect">模型选择</label>
+            <select id="modelSelect"></select>
+          </div>
+
+          <div class="field">
+            <label for="imageUpload">上传图片（jpg/png/bmp）</label>
+            <input type="file" id="imageUpload" accept=".jpg,.png,.bmp" />
+          </div>
+        </div>
+
+        <div class="row" style="margin-top: 12px">
+          <div class="field">
+            <label for="weightIdInput">可选权重ID（weight_id）</label>
+            <input type="text" id="weightIdInput" placeholder="不填则使用模型默认权重" />
+          </div>
+
+          <div class="field" style="justify-content: flex-end">
+            <label>&nbsp;</label>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap">
+              <button id="predictBtn">开始推理</button>
+              <button id="resetBtn" class="btn-secondary" type="button">重置</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tip" id="modelInfo">当前模型：-</div>
+
+        <div id="previewArea">
+          <div class="tip">请先选择模型并上传图片，预览区域将展示原图与缩放后图像。</div>
+        </div>
+
+        <div id="resultArea">
+          <div class="tip">推理完成后将在这里显示分割 mask 结果。</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const API_BASE = 'http://127.0.0.1:8000/api/v1/seg';
+      const API_TIMEOUT = 5000;
+
+      const modelSelect = document.getElementById('modelSelect');
+      const imageUpload = document.getElementById('imageUpload');
+      const weightIdInput = document.getElementById('weightIdInput');
+      const previewArea = document.getElementById('previewArea');
+      const predictBtn = document.getElementById('predictBtn');
+      const resetBtn = document.getElementById('resetBtn');
+      const resultArea = document.getElementById('resultArea');
+      const modelInfo = document.getElementById('modelInfo');
+
+      let modelList = [];
+      let currentModelConfig = null;
+      let originalFile = null;
+      let resizedBlob = null;
+      let isPredicting = false;
+      let originalPreviewDataUrl = '';
+
+      /**
+       * 页面初始化：拉取后端模型列表并渲染下拉框
+       */
+      async function getModelList() {
+        try {
+          const response = await axios.get(`${API_BASE}/models`, { timeout: API_TIMEOUT });
+          const payload = response.data;
+
+          if (payload.code !== 200 || !Array.isArray(payload.data)) {
+            throw new Error(payload.msg || '模型列表返回格式错误');
+          }
+
+          modelList = payload.data;
+
+          // 异常场景②：模型列表为空
+          if (modelList.length === 0) {
+            currentModelConfig = null;
+            modelSelect.innerHTML = '';
+            modelInfo.textContent = '当前模型：暂无可用模型';
+            refreshPredictButtonState();
+            alert('暂无可用模型，请联系管理员');
+            return;
+          }
+
+          renderModelOptions(modelList);
+          setCurrentModel(modelList[0].name);
+          refreshPredictButtonState();
+        } catch (error) {
+          // 异常场景①：/models接口调用失败
+          alert('加载模型列表失败，请刷新页面重试');
+          currentModelConfig = null;
+          refreshPredictButtonState();
+        }
+      }
+
+      /**
+       * 渲染模型选项：显示“模型名（宽×高）”
+       */
+      function renderModelOptions(models) {
+        modelSelect.innerHTML = '';
+
+        models.forEach((model) => {
+          const option = document.createElement('option');
+          const sizeText = formatInputSize(model.input_size);
+          option.value = model.name;
+          option.textContent = `${model.name}（${sizeText}）`;
+          modelSelect.appendChild(option);
+        });
+      }
+
+      /**
+       * 设置当前模型配置
+       */
+      function setCurrentModel(modelName) {
+        const found = modelList.find((item) => item.name === modelName);
+        if (!found) {
+          alert('模型未找到，请刷新页面重试');
+          return;
+        }
+
+        currentModelConfig = found;
+        modelInfo.textContent = `当前模型：${found.name}，输入尺寸：${formatInputSize(found.input_size)}，类别数：${found.num_classes}`;
+      }
+
+      /**
+       * 模型切换处理：更新配置并清空预览与结果
+       */
+      function handleModelChange() {
+        setCurrentModel(modelSelect.value);
+        clearPreviewAndResult();
+        imageUpload.value = '';
+        refreshPredictButtonState();
+      }
+
+      /**
+       * 上传处理：校验格式 -> 等比缩放 -> 保存Blob -> 预览
+       */
+      async function handleImageUpload(event) {
+        try {
+          const file = event.target.files && event.target.files[0];
+          if (!file) {
+            return;
+          }
+
+          if (!validateImageFormat(file)) {
+            imageUpload.value = '';
+            return;
+          }
+
+          if (!currentModelConfig || !Array.isArray(currentModelConfig.input_size)) {
+            throw new Error('当前模型配置缺少 input_size');
+          }
+
+          originalFile = file;
+          const resized = await resizeImageKeepRatio(file, currentModelConfig.input_size);
+          resizedBlob = resized.blob;
+          originalPreviewDataUrl = resized.originalDataUrl;
+
+          renderPreview(resized.originalDataUrl, resized.resizedDataUrl);
+          clearResultArea();
+          refreshPredictButtonState();
+        } catch (error) {
+          alert(`图片处理失败：${getErrorMessage(error)}`);
+          clearPreviewAndResult();
+          refreshPredictButtonState();
+        }
+      }
+
+      /**
+       * 推理提交：构建FormData并调用后端接口
+       */
+      async function submitPredict() {
+        if (!currentModelConfig) {
+          alert('请先选择模型');
+          return;
+        }
+
+        // 异常场景③：图片未上传
+        if (!resizedBlob) {
+          alert('请先上传图片');
+          return;
+        }
+
+        try {
+          setPredictButtonState(true);
+
+          const imageFile = new File([resizedBlob], originalFile ? originalFile.name : 'image.png', {
+            type: 'image/png'
+          });
+
+          const formData = new FormData();
+          formData.append('model_name', currentModelConfig.name);
+          formData.append('image_file', imageFile);
+          formData.append('weight_id', (weightIdInput.value || '').trim());
+
+          const response = await axios.post(`${API_BASE}/predict`, formData, {
+            timeout: API_TIMEOUT,
+            headers: {
+              'Content-Type': 'multipart/form-data'
+            }
+          });
+
+          const payload = response.data;
+          if (payload.code !== 200) {
+            throw new Error(payload.msg || '推理失败');
+          }
+
+          const data = payload.data || {};
+          if (!data.mask_base64) {
+            throw new Error('后端未返回 mask_base64');
+          }
+
+          renderResult(data.mask_base64, data.infer_time);
+        } catch (error) {
+          // 异常场景⑥：接口超时
+          if (isTimeoutError(error)) {
+            alert('推理超时，请检查网络或重试');
+            return;
+          }
+
+          // 异常场景④：推理接口返回错误码，优先解析后端msg
+          const serverMsg = error && error.response && error.response.data && error.response.data.msg;
+          alert(`推理失败：${serverMsg || getErrorMessage(error)}`);
+        } finally {
+          setPredictButtonState(false);
+        }
+      }
+
+      /**
+       * 图片格式校验：仅允许 jpg/png/bmp
+       */
+      function validateImageFormat(file) {
+        const fileName = String(file.name || '').toLowerCase();
+        const isValid = ['.jpg', '.jpeg', '.png', '.bmp'].some((ext) => fileName.endsWith(ext));
+
+        // 异常场景⑤：图片格式错误
+        if (!isValid) {
+          alert('仅支持jpg/png/bmp格式图片');
+        }
+        return isValid;
+      }
+
+      /**
+       * 等比缩放图片并居中填充到目标尺寸，避免拉伸
+       */
+      function resizeImageKeepRatio(file, inputSize) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+
+          reader.onload = function () {
+            const img = new Image();
+            img.onload = function () {
+              try {
+                const targetWidth = Number(inputSize[0]);
+                const targetHeight = Number(inputSize[1]);
+
+                const canvas = document.createElement('canvas');
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, targetWidth, targetHeight);
+
+                const scale = Math.min(targetWidth / img.width, targetHeight / img.height);
+                const drawWidth = Math.round(img.width * scale);
+                const drawHeight = Math.round(img.height * scale);
+                const offsetX = Math.floor((targetWidth - drawWidth) / 2);
+                const offsetY = Math.floor((targetHeight - drawHeight) / 2);
+
+                ctx.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
+
+                canvas.toBlob(
+                  (blob) => {
+                    if (!blob) {
+                      reject(new Error('缩放失败：无法生成Blob'));
+                      return;
+                    }
+
+                    resolve({
+                      blob,
+                      originalDataUrl: reader.result,
+                      resizedDataUrl: canvas.toDataURL('image/png')
+                    });
+                  },
+                  'image/png',
+                  0.92
+                );
+              } catch (e) {
+                reject(e);
+              }
+            };
+
+            img.onerror = function () {
+              reject(new Error('图片解码失败'));
+            };
+
+            img.src = reader.result;
+          };
+
+          reader.onerror = function () {
+            reject(new Error('文件读取失败'));
+          };
+
+          reader.readAsDataURL(file);
+        });
+      }
+
+      /**
+       * 渲染预览区域：原图 + 缩放后图
+       */
+      function renderPreview(originalDataUrl, resizedDataUrl) {
+        previewArea.innerHTML = '';
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'preview-grid';
+
+        const originalBox = document.createElement('div');
+        originalBox.className = 'preview-box';
+        originalBox.innerHTML = `
+          <div class="preview-title">原图预览</div>
+          <img src="${originalDataUrl}" alt="原图" />
+        `;
+
+        const resizedBox = document.createElement('div');
+        resizedBox.className = 'preview-box';
+        resizedBox.innerHTML = `
+          <div class="preview-title">缩放后预览（${formatInputSize(currentModelConfig.input_size)}）</div>
+          <img src="${resizedDataUrl}" alt="缩放后图像" />
+          <div class="tip">当前模型输入尺寸：${formatInputSize(currentModelConfig.input_size)}，已自动缩放图片</div>
+        `;
+
+        wrapper.appendChild(originalBox);
+        wrapper.appendChild(resizedBox);
+        previewArea.appendChild(wrapper);
+      }
+
+      /**
+       * 渲染结果区域：base64 mask图像
+       */
+      function renderResult(maskBase64, inferTime) {
+        resultArea.innerHTML = '';
+
+        const title = document.createElement('div');
+        title.className = 'preview-title';
+        title.textContent = `分割结果（推理耗时：${typeof inferTime === 'number' ? inferTime + 's' : '-'}）`;
+
+        // 体验优化③：原图与分割结果并排展示
+        const compare = document.createElement('div');
+        compare.className = 'compare-grid';
+
+        const originalBox = document.createElement('div');
+        originalBox.className = 'preview-box';
+        originalBox.innerHTML = `
+          <div class="preview-title">原图</div>
+          <img src="${originalPreviewDataUrl}" alt="原图" />
+        `;
+
+        const maskBox = document.createElement('div');
+        maskBox.className = 'preview-box';
+        maskBox.innerHTML = `
+          <div class="preview-title">分割结果 Mask</div>
+          <img src="data:image/png;base64,${maskBase64}" alt="分割Mask结果" />
+        `;
+
+        compare.appendChild(originalBox);
+        compare.appendChild(maskBox);
+
+        resultArea.appendChild(title);
+        resultArea.appendChild(compare);
+      }
+
+      /**
+       * 清空预览和结果区域
+       */
+      function clearPreviewAndResult() {
+        originalFile = null;
+        resizedBlob = null;
+        originalPreviewDataUrl = '';
+
+        previewArea.innerHTML = '<div class="tip">模型已切换，请重新上传图片。</div>';
+        resultArea.innerHTML = '<div class="tip">暂无分割结果。</div>';
+      }
+
+      /**
+       * 清空结果区域
+       */
+      function clearResultArea() {
+        resultArea.innerHTML = '<div class="tip">请点击“开始推理”获取分割结果。</div>';
+      }
+
+      /**
+       * 设置推理按钮状态（loading）
+       */
+      function setPredictButtonState(loading) {
+        isPredicting = loading;
+        predictBtn.classList.toggle('is-loading', loading);
+        predictBtn.textContent = loading ? '推理中...' : '开始推理';
+        refreshPredictButtonState();
+      }
+
+      /**
+       * 根据当前页面状态刷新按钮禁用态
+       */
+      function refreshPredictButtonState() {
+        const noModel = !currentModelConfig || modelList.length === 0;
+        const noImage = !resizedBlob;
+        predictBtn.disabled = isPredicting || noModel || noImage;
+      }
+
+      /**
+       * 体验优化④：重置所有输入与结果
+       */
+      function handleReset() {
+        weightIdInput.value = '';
+        imageUpload.value = '';
+        clearPreviewAndResult();
+
+        if (modelList.length > 0) {
+          modelSelect.value = modelList[0].name;
+          setCurrentModel(modelList[0].name);
+          previewArea.innerHTML = '<div class="tip">请重新上传图片，预览区域将展示原图与缩放后图像。</div>';
+        }
+
+        refreshPredictButtonState();
+      }
+
+      /**
+       * 格式化输入尺寸
+       */
+      function formatInputSize(inputSize) {
+        if (!Array.isArray(inputSize) || inputSize.length !== 2) {
+          return '-';
+        }
+        return `${inputSize[0]}×${inputSize[1]}`;
+      }
+
+      /**
+       * 统一错误信息提取
+       */
+      function getErrorMessage(error) {
+        if (!error) return '未知错误';
+        if (typeof error === 'string') return error;
+        if (error.message) return error.message;
+        return '未知错误';
+      }
+
+      /**
+       * 判断是否为超时错误
+       */
+      function isTimeoutError(error) {
+        const code = error && error.code;
+        const message = String((error && error.message) || '').toLowerCase();
+        return code === 'ECONNABORTED' || message.includes('timeout');
+      }
+
+      // 绑定事件
+      modelSelect.addEventListener('change', handleModelChange);
+      imageUpload.addEventListener('change', handleImageUpload);
+      predictBtn.addEventListener('click', submitPredict);
+      resetBtn.addEventListener('click', handleReset);
+
+      // 页面加载初始化
+      window.addEventListener('DOMContentLoaded', () => {
+        getModelList();
+        refreshPredictButtonState();
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,104 @@
+# ==================== OS / Editor ====================
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+*.swo
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ==================== Python Backend ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+octa_env/
+
+# Backend runtime artifacts
+octa_backend/*.db
+octa_backend/*.sqlite
+octa_backend/*.sqlite3
+octa_backend/logs/
+octa_backend/uploads/
+octa_backend/results/
+
+# Model weights / binaries
+octa_backend/models/weights/*.pth
+octa_backend/models/weights/*.pt
+octa_backend/models/weights/*.onnx
+octa_backend/models/weights/*.ckpt
+octa_backend/models/**/*.pth
+octa_backend/models/**/*.pt
+octa_backend/models/**/*.onnx
+octa_backend/models/**/*.ckpt
+
+# Local Python wheel cache / offline installers
+pytorch_wheels/
+*.whl
+
+# Test/demo data that may include sensitive images
+octa_backend/test_data/*.png
+octa_backend/test_data/*.jpg
+octa_backend/test_data/*.jpeg
+octa_backend/test_data/*.bmp
+octa_backend/test_data/*.tif
+octa_backend/test_data/*.tiff
+
+# Environment files / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ==================== Frontend (Vite/Vue) ====================
+octa_frontend/node_modules/
+octa_frontend/dist/
+octa_frontend/dist-ssr/
+octa_frontend/coverage/
+octa_frontend/.eslintcache
+octa_frontend/*.tsbuildinfo
+octa_frontend/.vite/
+
+# Frontend logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Cypress / Vitest artifacts
+octa_frontend/cypress/videos/
+octa_frontend/cypress/screenshots/
+octa_frontend/__screenshots__/
+
+# ==================== Build / Archive ====================
+*.zip
+*.tar
+*.gz
+*.7z
+*.rar
+
+# ==================== Local tooling ====================
+.cache/
+.tmp/

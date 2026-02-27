@@ -1,0 +1,289 @@
+"""
+权重管理服务
+
+# Fix: 平台优化 - 放弃训练模块，聚焦预测功能（升级版）
+
+功能：
+- 权重上传/校验/存储（集成core.weight_validator）
+- 权重列表查询/删除
+- 权重路径解析（weight_id → 真实路径，含官方预置权重）
+- 严格state_dict校验（与本地U-Net模型key完全匹配）
+
+升级亮点：
+- 使用core.weight_validator进行完整性校验（文件格式+大小+state_dict）
+- 详细的校验错误提示（明确哪些层缺失）
+- 支持权重元数据提取（参数量、样本keys、训练信息）
+- 完整的日志记录
+
+作者：OCTA Web项目组
+日期：2026-01-27
+"""
+
+import os
+import uuid
+import logging
+from pathlib import Path
+from typing import List, Optional, Dict, Tuple
+
+import torch
+from fastapi import HTTPException, UploadFile, status
+
+from config.config import (
+    WEIGHT_UPLOAD_ROOT,
+    WEIGHT_MAX_SIZE,
+    WEIGHT_ALLOWED_FORMATS,
+    OFFICIAL_WEIGHT_PATH,
+)
+from core.weight_validator import get_validator
+from dao.file_dao import FileDAO
+
+logger = logging.getLogger(__name__)
+
+
+class WeightService:
+    """权重管理核心服务"""
+
+    root_dir = Path(WEIGHT_UPLOAD_ROOT)
+
+    @classmethod
+    def ensure_dirs(cls) -> None:
+        """确保权重目录存在（含官方权重目录）。"""
+        cls.root_dir.mkdir(parents=True, exist_ok=True)
+        official_dir = Path(OFFICIAL_WEIGHT_PATH).parent
+        official_dir.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def _validate_meta(cls, upload: UploadFile) -> None:
+        """
+        快速校验：检查扩展名与体积限制
+        
+        注意：这是初步校验，完整校验在save_weight中进行
+        """
+        suffix = upload.filename.split(".")[-1].lower()
+        if suffix not in WEIGHT_ALLOWED_FORMATS:
+            logger.warning(f"[权重上传] ✗ 格式错误: {suffix}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"权重格式错误，仅支持 {'/'.join(WEIGHT_ALLOWED_FORMATS)}",
+            )
+        try:
+            upload.file.seek(0, os.SEEK_END)
+            size = upload.file.tell()
+            upload.file.seek(0)
+        except Exception:
+            size = None
+        if size is not None and size > WEIGHT_MAX_SIZE:
+            size_mb = size / 1024 / 1024
+            max_mb = WEIGHT_MAX_SIZE / 1024 / 1024
+            logger.warning(f"[权重上传] ✗ 文件过大: {size_mb:.2f}MB > {max_mb}MB")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"权重文件过大 ({size_mb:.2f}MB)，最大支持{max_mb}MB",
+            )
+
+    @classmethod
+    def _load_state_dict_for_validation(cls, weight_path: Path, model_type: str) -> Tuple[List[str], List[str]]:
+        """加载state_dict并返回缺失/多余键列表。"""
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        checkpoint = torch.load(weight_path, map_location=device)
+        # 兼容 state_dict 包装
+        if isinstance(checkpoint, dict) and any(k in checkpoint for k in ("state_dict", "model_state_dict")):
+            state_dict = checkpoint.get("state_dict") or checkpoint.get("model_state_dict")
+        else:
+            state_dict = checkpoint
+
+        # 仅支持unet模型校验；其他模型直接跳过键校验
+        if model_type not in ["unet", None]:
+           
+        保存并校验权重（升级版 - 集成core.weight_validator）
+        
+        Args:
+            upload: 上传的权重文件
+            model_type: 模型类型（unet/rs_unet3_plus）
+        
+        Returns:
+            权重元信息字典（weight_id、file_id、file_name等）
+        
+        校验流程：
+        1. 快速校验：扩展名+文件大小
+        2. 保存到临时位置
+        3. 完整校验：使用core.weight_validator验证state_dict
+        4. 校验通过：保存到数据库
+        5. 校验失败：删除文件并返回错误
+        """
+        cls.ensure_dirs()
+        cls._validate_meta(upload)
+
+        # 生成唯一weight_id
+        weight_id = uuid.uuid4().hex
+        target_dir = cls.root_dir / weight_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / upload.filename
+
+        # 保存文件
+        content = upload.file.read()
+        with open(target_path, "wb") as f:
+            f.write(content)
+        
+        logger.info(f"[权重上传] 文件已保存: {target_path}")
+
+        # 完整校验（使用core.weight_validator）
+        validator = get_validator(max_size_mb=WEIGHT_MAX_SIZE // 1024 // 1024)
+        is_valid, error_msg, metadata = validator.validate_file(target_path, model_type)
+        
+        if not is_valid:
+            # 校验失败：删除文件并返回错误
+            logger.error(f"[权重上传] ✗ 校验失败: {error_msg}")
+            try:
+                target_path.unlink(missing_ok=True)
+                target_dir.rmdir()
+            except Exception as e:
+                logger.warning(f"[权重上传] 清理临时文件失败: {e}")
+            
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"权重校验失败: {error_msg}",
+            )
+
+        # 保存到数据库
+        size_mb = round(len(content) / 1024 / 1024, 4)
+        file_id = FileDAO.add_file_record(
+            file_name=upload.filename,
+            file_path=str(target_path),
+           
+        查询已上传权重列表
+        
+        Args:
+            model_type: 模型类型过滤（可选）
+        
+        Returns:
+            权重列表
+        """
+        cls.ensure_dirs()
+        weights = FileDAO.get_file_list(file_type="weight", model_type=model_type)
+        logger.debug(f"[权重列表] 查询完成，共{len(weights)}个权重")
+        return weights
+
+    @classmethod
+    def delete_weight(cls, weight_id: str) -> bool:
+        """
+        删除权重（文件+数据库记录）
+        
+        Args:
+            weight_id: 权重ID
+        
+        Returns:
+            是否删除成功
+        """
+        cls.ensure_dirs()
+        logger.info(f"[权重删除] 开始删除 weight_id={weight_id}")
+        
+        # 根据 weight_id 查找记录路径
+        record = FileDAO.get_file_by_weight_id(weight_id) if hasattr(FileDAO, "get_file_by_weight_id") else None
+        # 回退：遍历列表匹配路径包含 weight_id
+        if record is None:
+            for item in FileDAO.get_file_list(file_type="weight"):
+                if weight_id in (item.get("file_path") or ""):
+                    record = item
+                    break
+        
+        if record is None:
+            logger.warning(f"[权重删除] ✗ weight_id不存在: {weight_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="weight_id不存在"
+            )
+        
+        file_path = Path(record.get("file_path"))
+        folder = file_path.parent
+        
+        # 删除数据库记录
+        FileDAO.delete_file(record.get("id"))
+        logger.info(f"[权重删除] ✓ 数据库记录已删除")
+        
+        # 删除文件夹
+        if folder.exists():
+说明：
+- 旧版_load_state_dict_for_validation已被core.weight_validator替代    for child in folder.glob("**/*"):
+                try:
+                    child.unlink()
+                except Exception as e:
+                    logger.warning(f"[权重删除] 删除文件失败: {child}, {e}")
+            try:
+                folder.rmdir()
+                logger.info(f"[权重删除] ✓ 文件夹已删除: {folder}")
+            except Exception as e:
+                logger.warning(f"[权重删除] 删除文件夹失败: {folder}, {e}")
+        
+        return True
+
+    @classmethod
+    def resolve_weight_path(cls, weight_id: Optional[str], model_type: str = "unet") -> str:
+        """
+        将weight_id解析为实际权重路径
+        
+        Args:
+            weight_id: 权重ID（可选，默认使用官方权重）
+            model_type: 模型类型
+        
+        Returns:
+            权重文件实际路径
+        
+        解析规则：
+        1. weight_id为空 → 官方权重
+        2. weight_id为"official" → 官方权重
+        3. weight_id为UUID → 查找对应权重
+        """
+        cls.ensure_dirs()
+        
+        if not weight_id or weight_id == "official":
+            logger.debug(f"[权重解析] 使用官方权重: {OFFICIAL_WEIGHT_PATH}")
+            return OFFICIAL_WEIGHT_PATH
+        
+        # 查找记录
+        candidates = FileDAO.get_file_list(file_type="weight", model_type=model_type)
+        for item in candidates:
+            if weight_id in (item.get("file_path") or ""):
+                weight_path = item.get("file_path")
+                logger.debug(f"[权重解析] weight_id={weight_id} → {weight_path}")
+                return weight_path
+        
+        # 未找到
+        logger.warning(f"[权重解析] ✗ weight_id不存在: {weight_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"weight_id不存在: {weight_id}"
+        
+        if folder.exists():
+            for child in folder.glob("**/*"):
+                try:
+                    child.unlink()
+                except Exception:
+                    pass
+            try:
+                folder.rmdir()
+            except Exception:
+                pass
+        return True
+
+    @classmethod
+    def resolve_weight_path(cls, weight_id: Optional[str], model_type: str = "unet") -> str:
+        """将weight_id解析为实际权重路径，缺省返回官方权重。"""
+        cls.ensure_dirs()
+        if not weight_id:
+            return OFFICIAL_WEIGHT_PATH
+        # 允许直接传官方标识
+        if weight_id == "official":
+            return OFFICIAL_WEIGHT_PATH
+        # 查找记录
+        candidates = FileDAO.get_file_list(file_type="weight", model_type=model_type)
+        for item in candidates:
+            if weight_id in (item.get("file_path") or ""):
+                return item.get("file_path")
+        # 未找到
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="weight_id不存在")
+
+"""
+辅助DAO扩展：
+- FileDAO.get_file_by_weight_id 可后续补充用于直接按weight_id查询
+"""
