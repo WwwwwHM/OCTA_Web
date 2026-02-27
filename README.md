@@ -1,64 +1,108 @@
-# OCTA图像分割Web平台设计与实现
+# OCTA_Web
 
-## 1. 项目背景
-OCTA（光学相干断层血管成像）用于无创观察视网膜血流情况，依赖分割算法识别血管结构。本平台提供端到端的Web服务，支持临床辅助诊断与科研数据处理，特点是：
-- 浏览器即可完成上传、分割、预览与下载。
-- 后端固定权重路径和CPU推理，适配无GPU环境。
-- 失败容错：模型异常时返回原图，保障联调不中断。
+OCTA（Optical Coherence Tomography Angiography）图像分割平台，采用前后端分离架构：
 
-## 2. 需求分析
-核心功能：
-- 上传：仅允许PNG，自动UUID重命名，校验格式与大小。
-- 分割：调用后端模型（U-Net/FCN），输出8位灰度掩码。
-- 历史记录：SQLite持久化上传时间、模型类型、原图与结果路径。
-- 下载：结果PNG可直接下载/查看。
+- 后端：FastAPI + PyTorch（模型注册表 + 通用推理接口）
+- 前端：Vue 3 + Vite + Element Plus（模型选择、图像预览、推理与管理页面）
+- 数据：SQLite（文件/记录元数据）
 
-## 3. 技术选型
-- 前端：Vue 3 + Element Plus + Axios（Vite构建）。
-- 后端：FastAPI + SQLite，路径管理使用 pathlib，异常返回 HTTPException。
-- AI模型：U-Net（主）、FCN（备选）；固定权重路径 ./models/weights/unet_octa.pth，CPU 推理。
+## 当前项目能力（与代码一致）
 
-## 4. 环境搭建步骤
-### 4.1 后端（Windows）
-```bash
+### 1) 模型即插即用
+- 后端启动时自动扫描并导入 `octa_backend/models/**/model.py`
+- 模型通过 `register_model(...)` 注册到统一注册表
+- 当前模型目录示例：`unet`、`unetpp`、`attention_unet_transformer`
+- 实际可用模型以接口 `GET /api/v1/seg/models` 返回为准
+
+### 2) 通用分割推理接口
+- 路由：`POST /api/v1/seg/predict`
+- 入参：`model_name`（必填）、`image_file`（必填）、`weight_id`（可选）
+- 支持图像格式：`png/jpg/jpeg/bmp/tiff/tif`
+- 返回：`mask_base64`、`infer_time`、`device` 等结构化字段
+
+### 3) 权重管理模块（代码已提供）
+- 路由文件：`octa_backend/router/weight_router.py`
+- 提供上传/列表/删除能力（`/api/v1/weight/*`）
+- 支持 `.pth/.pt`，默认上限 200MB（见 `config.py`）
+
+### 4) 前端页面
+- 首页：模型选择、上传预览、推理与结果展示
+- 历史记录页：记录查询与统计
+- 文件管理页：文件筛选/预览/删除
+- 权重管理页：权重上传、下载、删除
+
+## 项目结构
+
+```text
+OCTA_Web/
+├─ octa_backend/               # FastAPI 后端
+│  ├─ main.py                  # 应用入口（自动扫描模型并注册路由）
+│  ├─ router/                  # 接口路由（seg/weight）
+│  ├─ service/                 # 注册表、业务服务
+│  ├─ dao/                     # SQLite 数据访问
+│  ├─ models/                  # 各模型目录（每个目录含 model.py）
+│  └─ config/config.py         # 统一配置
+├─ octa_frontend/              # Vue3 前端
+│  ├─ src/views/               # Home/History/FileManager/WeightManager
+│  └─ package.json
+└─ README.md
+```
+
+## 快速启动（Windows）
+
+### 1) 启动后端
+
+```powershell
 cd octa_backend
 ..\octa_env\Scripts\activate
 pip install -r requirements.txt
-# 启动开发服务（默认 127.0.0.1:8000）
 python main.py
-# 或 uvicorn main:app --reload --port 8000
 ```
 
-### 4.2 前端
-```bash
+后端默认：`http://127.0.0.1:8000`
+
+- Swagger：`http://127.0.0.1:8000/docs`
+- 健康检查：`GET /`
+
+### 2) 启动前端
+
+```powershell
 cd octa_frontend
 npm install
-npm run dev  # 默认 http://127.0.0.1:5173
+npm run dev
 ```
 
-## 5. 核心功能实现
-- 上传与校验：后端 validate_image_file() 仅接受 PNG，前端 el-upload 配合文件大小校验（10MB）。
-- 分割流程：segment_octa_image() 预处理→推理→后处理，失败时回退原图路径以便联调。
-- 路径管理：uploads/ 存原图，results/ 存掩码，静态访问 /images/{name} 与 /results/{name}。
-- 历史记录：insert_record() 写入 SQLite，get_all_records()/get_record_by_id() 提供查询。
-- 结果下载：前端生成临时 <a> 触发下载，后端 FileResponse 返回 PNG。
+前端默认：`http://127.0.0.1:5173`
 
-## 6. 功能演示
-1) 打开前端 http://127.0.0.1:5173/ 。
-2) 选择 PNG 文件（≤10MB），预览缩略图。
-3) 选择模型（U-Net/FCN），点击“开始图像分割”。
-4) 查看左右对比：左原图，右分割结果；可下载结果 PNG。
-5) 在“历史记录”页查看分割记录并回溯文件。
+## API 速览
 
-## 7. 常见问题解决
-- 跨域报错：确保后端 allow_origins 包含前端实际端口（默认 5173），修改后重启后端。
-- 模型加载失败：确认 ./models/weights/unet_octa.pth 存在且可读；无权重时返回原图属预期。
-- 文件路径错误：确保在 octa_backend 目录启动；uploads/ 与 results/ 会自动创建，如缺失手动创建。
+### 已启用（main.py 已挂载）
 
-## 8. GitHub 发布建议
-- 发布前请先阅读仓库根目录清单：`GITHUB_PUBLISH_CHECKLIST.md`。
-- 重点检查：虚拟环境、模型权重、运行产物与医学图像隐私数据，避免误上传。
-- 若前端端口发生变化，发布说明中请同步标注后端 CORS 配置调整位置（`octa_backend/main.py`）。
+- `GET /`：服务健康检查
+- `GET /api/v1/seg/models`：获取已注册模型列表
+- `POST /api/v1/seg/predict`：执行分割推理
 
----
-如需演示脚本、技术细节与变更记录，可参阅 octa_frontend/HOMEVIEW_FILE_NAVIGATION.md 获取跳转指引。
+### 可扩展模块（已有实现）
+
+- `octa_backend/router/weight_router.py`：权重上传/列表/删除接口
+- 需要时可在 `main.py` 中挂载对应 router
+
+## 关键配置
+
+主要配置集中在 `octa_backend/config/config.py`：
+
+- `CORS_ORIGINS`：默认允许 `5173` 前端地址
+- `WEIGHT_UPLOAD_ROOT`、`WEIGHT_MAX_SIZE`：权重存储与大小限制
+- `DB_PATH`：SQLite 路径（默认 `./octa.db`）
+
+## 常见问题
+
+- 跨域失败：检查 `CORS_ORIGINS` 是否包含当前前端端口，修改后重启后端。
+- 模型列表为空：确认模型目录存在 `model.py` 且导入时成功执行 `register_model`。
+- 推理报错“模型未注册”：确认 `model_name` 与 `GET /api/v1/seg/models` 返回项一致。
+
+## GitHub 发布建议
+
+- 发布前先阅读：`GITHUB_PUBLISH_CHECKLIST.md`
+- 避免提交：虚拟环境、模型大权重、运行产物与敏感数据
+- 已提供仓库级 `.gitignore`，建议保持启用
